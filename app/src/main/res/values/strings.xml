@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Image Frame and Gyroscope</string>
+    <string name="stop_capture">stop capture</string>
+    <string name="start_capture">start capture</string>
+</resources>
