@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.ImageCapture
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
@@ -18,27 +17,25 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import android.widget.Toast
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.core.Preview
-import androidx.camera.core.CameraSelector
 import android.util.Log
-import android.hardware.Camera.PreviewCallback
+
 import android.media.ImageReader
-import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.ImageProxy
+import android.util.Size
+import androidx.camera.core.*
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.PermissionChecker
+import androidx.lifecycle.LifecycleOwner
 import com.example.imageframeandgyroscope.databinding.ActivityMainBinding
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.Executor
 
-typealias LumaListener = (luma: Double) -> Unit
-
-class MainActivity : AppCompatActivity(), ImageReader.OnImageAvailableListener {
+class MainActivity : AppCompatActivity(), ImageAnalysis.Analyzer {
     private lateinit var viewBinding: ActivityMainBinding
 
     private var imageCapture: ImageCapture? = null
@@ -46,15 +43,20 @@ class MainActivity : AppCompatActivity(), ImageReader.OnImageAvailableListener {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
 
+    //global vars for camera setup and image analyzer
     private lateinit var cameraExecutor: ExecutorService
-
-    private var isProcessingFrame = false
-    private val yuvBytes = arrayOfNulls<ByteArray>(3)
-    private var rgbBytes: IntArray? = null
-    private var yRowStride = 0
-    private var postInferenceCallback: Runnable? = null
-    private var imageConverter: Runnable? = null
-    private var rgbFrameBitmap: Bitmap? = null
+    private lateinit var cameraProvider: ProcessCameraProvider
+    private lateinit var cameraSelector: CameraSelector
+    private lateinit var preview: Preview
+    private lateinit var executor: Executor
+    private lateinit var imageAnalysis: ImageAnalysis
+//    private var isProcessingFrame = false
+//    private val yuvBytes = arrayOfNulls<ByteArray>(3)
+//    private var rgbBytes: IntArray? = null
+//    private var yRowStride = 0
+//    private var postInferenceCallback: Runnable? = null
+//    private var imageConverter: Runnable? = null
+//    private var rgbFrameBitmap: Bitmap? = null
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -159,40 +161,43 @@ class MainActivity : AppCompatActivity(), ImageReader.OnImageAvailableListener {
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        executor = ContextCompat.getMainExecutor(this)
 
         cameraProviderFuture.addListener({
             // Used to bind the lifecycle of cameras to the lifecycle owner
-            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+            cameraProvider = cameraProviderFuture.get()
 
             // Preview
-            val preview = Preview.Builder()
+            preview = Preview.Builder()
                 .build()
                 .also {
                     it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
                 }
 
-            //video
+            //video  use case binding
             val recorder = Recorder.Builder()
                 .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
             // Select back camera as a default
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+            //use case for imageAnalyzer set up image analyzer to bind with cameraProvider
+            imageAnalyzer()
 
             try {
                 // Unbind use cases before rebinding
                 cameraProvider.unbindAll()
 
-                // Bind use cases to camera for video
-                cameraProvider
-                    .bindToLifecycle(this, cameraSelector, preview, videoCapture)
+                //Bind use cases imageanalysis, videocapture, and preview for the video
+                cameraProvider.bindToLifecycle(this, cameraSelector, preview, videoCapture, imageAnalysis)
 
             } catch(exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
 
-        }, ContextCompat.getMainExecutor(this))
+        }, executor)
     }
 
     override fun onDestroy() {
@@ -217,61 +222,22 @@ class MainActivity : AppCompatActivity(), ImageReader.OnImageAvailableListener {
             }.toTypedArray()
     }
 
-    override fun onImageAvailable(reader: ImageReader?) {
-        try {
-            val image = reader.acquireLatestImage() ?: return
-            if (isProcessingFrame) {
-                image.close()
-                return
-            }
-            isProcessingFrame = true
-            val planes = image.planes
-            fillBytes(planes, yuvBytes)
-            yRowStride = planes[0].rowStride
-            val uvRowStride = planes[1].rowStride
-            val uvPixelStride = planes[1].pixelStride
-            imageConverter = Runnable {
-                ImageUtils.convertYUV420ToARGB8888(
-                    yuvBytes[0]!!,
-                    yuvBytes[1]!!,
-                    yuvBytes[2]!!,
-                    previewWidth,
-                    previewHeight,
-                    yRowStride,
-                    uvRowStride,
-                    uvPixelStride,
-                    rgbBytes!!
-                )
-            }
-            postInferenceCallback = Runnable {
-                image.close()
-                isProcessingFrame = false
-            }
-            processImage()
-        } catch (e: Exception) {
-            return
-        }
-    }
-    private fun processImage() {
-        imageConverter!!.run()
-        rgbFrameBitmap = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
-        rgbFrameBitmap?.setPixels(rgbBytes, 0, previewWidth, 0, 0, previewWidth, previewHeight)
-        postInferenceCallback!!.run()
+    //should be called after startCamera()
+     private fun imageAnalyzer(){
+        imageAnalysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+        imageAnalysis.setAnalyzer(executor, ImageAnalysis.Analyzer { imageProxy -> analyze(imageProxy)
+            //releasing the image processing object
+            imageProxy.close()
+        })
+
+//        cameraProvider.bindToLifecycle(this as LifecycleOwner, cameraSelector, imageAnalysis, preview)
     }
 
-    protected fun fillBytes(
-        planes: Array<Image.Plane>,
-        yuvBytes: Array<ByteArray?>
-    ) {
-        // Because of the variable row stride it's not possible to know in
-        // advance the actual necessary dimensions of the yuv planes.
-        for (i in planes.indices) {
-            val buffer = planes[i].buffer
-            if (yuvBytes[i] == null) {
-                yuvBytes[i] = ByteArray(buffer.capacity())
-            }
-            buffer[yuvBytes[i]]
-        }
+    //analyzes and processes the images from image
+    override fun analyze(image: ImageProxy) {
+        //ByteBuffer imageBuffer
+        Log.d(TAG, "analyze: processed")
     }
-
 }
