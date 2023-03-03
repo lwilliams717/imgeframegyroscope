@@ -38,7 +38,7 @@ import java.util.concurrent.Executor
 class MainActivity : AppCompatActivity(), ImageAnalysis.Analyzer {
     private lateinit var viewBinding: ActivityMainBinding
 
-    private var imageCapture: ImageCapture? = null
+    //private var imageCapture: ImageCapture? = null
 
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
@@ -50,13 +50,6 @@ class MainActivity : AppCompatActivity(), ImageAnalysis.Analyzer {
     private lateinit var preview: Preview
     private lateinit var executor: Executor
     private lateinit var imageAnalysis: ImageAnalysis
-//    private var isProcessingFrame = false
-//    private val yuvBytes = arrayOfNulls<ByteArray>(3)
-//    private var rgbBytes: IntArray? = null
-//    private var yRowStride = 0
-//    private var postInferenceCallback: Runnable? = null
-//    private var imageConverter: Runnable? = null
-//    private var rgbFrameBitmap: Bitmap? = null
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -205,6 +198,23 @@ class MainActivity : AppCompatActivity(), ImageAnalysis.Analyzer {
         cameraExecutor.shutdown()
     }
 
+    //should be in startCamera()
+     private fun imageAnalyzer(){
+        imageAnalysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+        imageAnalysis.setAnalyzer(executor, ImageAnalysis.Analyzer { imageProxy -> analyze(imageProxy)
+            //releasing the image processing object
+            imageProxy.close()
+        })
+    }
+
+    //analyzes imageFrames
+    override fun analyze(image: ImageProxy) {
+        //ByteBuffer imageBuffer
+        Log.d(TAG, "analyze: processed")
+    }
+
 
     //saving video file to device (not sure if i need this yet)
     companion object {
@@ -220,24 +230,5 @@ class MainActivity : AppCompatActivity(), ImageAnalysis.Analyzer {
                     add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 }
             }.toTypedArray()
-    }
-
-    //should be called after startCamera()
-     private fun imageAnalyzer(){
-        imageAnalysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-        imageAnalysis.setAnalyzer(executor, ImageAnalysis.Analyzer { imageProxy -> analyze(imageProxy)
-            //releasing the image processing object
-            imageProxy.close()
-        })
-
-//        cameraProvider.bindToLifecycle(this as LifecycleOwner, cameraSelector, imageAnalysis, preview)
-    }
-
-    //analyzes and processes the images from image
-    override fun analyze(image: ImageProxy) {
-        //ByteBuffer imageBuffer
-        Log.d(TAG, "analyze: processed")
     }
 }
